@@ -99,6 +99,11 @@ class DecodingOptions:
     # implementation details
     fp16: bool = True  # use fp16 for most of the calculation
 
+    # Biasing
+    biasing: bool = False
+    biasingmodule: torch.nn.Module = None
+    origtree: list = None
+
 
 @dataclass(frozen=True)
 class DecodingResult:
@@ -143,6 +148,16 @@ class PyTorchInference(Inference):
             tokens = tokens[:, -1:]
 
         return self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache)
+
+    def getstates(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
+        if not self.kv_cache:
+            self.kv_cache, self.hooks = self.model.install_kv_cache_hooks()
+
+        if tokens.shape[-1] > self.initial_token_length:
+            # only need to use the last token except in the first forward pass
+            tokens = tokens[:, -1:]
+
+        return self.model.decoder.get_states(tokens, audio_features, kv_cache=self.kv_cache)
 
     def cleanup_caching(self):
         for hook in self.hooks:
@@ -274,13 +289,14 @@ class GreedyDecoder(TokenDecoder):
 
 
 class BeamSearchDecoder(TokenDecoder):
-    def __init__(self, beam_size: int, eot: int, inference: Inference, patience: Optional[float] = None):
+    def __init__(self, beam_size: int, eot: int, inference: Inference, patience: Optional[float] = None, biasing=False):
         self.beam_size = beam_size
         self.eot = eot
         self.inference = inference
         self.patience = patience or 1.0
         self.max_candidates: int = round(beam_size * self.patience)
         self.finished_sequences = None
+        self.biasing = biasing
 
         assert self.max_candidates > 0, f"Invalid beam size ({beam_size}) or patience ({patience})"
 
@@ -295,7 +311,10 @@ class BeamSearchDecoder(TokenDecoder):
         if self.finished_sequences is None:  # for the first update
             self.finished_sequences = [{} for _ in range(n_audio)]
 
-        logprobs = F.log_softmax(logits.float(), dim=-1)
+        if not self.biasing:
+            logprobs = F.log_softmax(logits.float(), dim=-1)
+        else:
+            logprobs = logits
         next_tokens, source_indices, finished_sequences = [], [], []
         for i in range(n_audio):
             scores, sources, finished = {}, {}, {}
@@ -341,7 +360,7 @@ class BeamSearchDecoder(TokenDecoder):
         completed = all(
             len(sequences) >= self.max_candidates for sequences in self.finished_sequences
         )
-        return tokens, completed
+        return tokens, completed, source_indices
 
     def finalize(self, preceding_tokens: Tensor, sum_logprobs: Tensor):
         # collect all finished sequences, including patience, and add unfinished ones if not enough
@@ -460,6 +479,12 @@ class DecodingTask:
         self.tokenizer: Tokenizer = tokenizer
         self.options: DecodingOptions = self._verify_options(options)
 
+        self.biasing = False
+        if self.options.biasing:
+            self.biasing = True
+            self.biasingmodule = options.biasingmodule
+            self.origtree = options.origtree
+
         self.n_group: int = options.beam_size or options.best_of or 1
         self.n_ctx: int = model.dims.n_text_ctx
         self.sample_len: int = options.sample_len or model.dims.n_text_ctx // 2
@@ -480,10 +505,12 @@ class DecodingTask:
 
         # decoder: implements how to select the next tokens, given the autoregressive distribution
         if options.beam_size is not None:
+            self.beam_size = options.beam_size
             self.decoder = BeamSearchDecoder(
-                options.beam_size, tokenizer.eot, self.inference, options.patience
+                options.beam_size, tokenizer.eot, self.inference, options.patience, options.biasing
             )
         else:
+            self.beam_size = 1
             self.decoder = GreedyDecoder(options.temperature, tokenizer.eot)
 
         # logit filters: applies various rules to suppress or penalize certain tokens
@@ -511,6 +538,8 @@ class DecodingTask:
             raise ValueError("patience requires beam_size to be given")
         if options.length_penalty is not None and not (0 <= options.length_penalty <= 1):
             raise ValueError("length_penalty (alpha) should be a value between 0 and 1")
+        if options.biasing and options.biasingmodule is None:
+            raise ValueError("Must provide biasing module to use biasing")
 
         return options
 
@@ -589,10 +618,22 @@ class DecodingTask:
         n_batch = tokens.shape[0]
         sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
         no_speech_probs = [np.nan] * n_batch
+        if self.biasing:
+            origtrees = [self.origtree for _ in range(self.beam_size)]
+            treetracks = origtrees
 
         try:
             for i in range(self.sample_len):
-                logits = self.inference.logits(tokens, audio_features)
+                if self.biasing:
+                    logits, hidden = self.inference.getstates(tokens, audio_features)
+                    query = self.biasingmodule.Qproj(hidden[:, -1])
+                    step_mask, step_embs, treetracks, p_gen_mask, back_transform, index_list = self.biasingmodule.get_step_biasing_embs_prefix(
+                        tokens[:, -1], treetracks, origtrees)
+                    hptr, tcpgen_dist = self.biasingmodule.get_meetingKB_emb_map(
+                        query, step_mask, back_transform, index_list, meeting_KB=step_embs)
+                    gen_prob = torch.sigmoid(self.biasingmodule.pointer_gate(torch.cat([hptr, hidden[:, -1]], dim=-1)))
+                else:
+                    logits = self.inference.logits(tokens, audio_features)
 
                 if i == 0 and self.tokenizer.no_speech is not None:  # save no_speech_probs
                     probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
@@ -605,8 +646,19 @@ class DecodingTask:
                 for logit_filter in self.logit_filters:
                     logit_filter.apply(logits, tokens)
 
+                # Apply biasing if needed:
+                if self.biasing:
+                    modeldist = torch.softmax(logits, dim=-1)
+                    ptr_gen_complement = tcpgen_dist[:,-1:] * gen_prob
+                    # print((tcpgen_dist[:,:-1] * gen_prob).sum(dim=-1))
+                    # print(tokens)
+                    logits = torch.log(tcpgen_dist[:,:-1] * gen_prob + modeldist * (1 - gen_prob + ptr_gen_complement))
+
                 # expand the tokens tensor with the selected next tokens
-                tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
+                tokens, completed, source_indices = self.decoder.update(tokens, logits, sum_logprobs)
+
+                if self.biasing:
+                    treetracks = [treetracks[k] for k in source_indices]
 
                 if completed or tokens.shape[-1] > self.n_ctx:
                     break

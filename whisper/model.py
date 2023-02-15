@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict
 from typing import Iterable, Optional
+import math
 
 import numpy as np
 import torch
@@ -10,6 +11,7 @@ from torch import nn
 
 from .transcribe import transcribe as transcribe_function
 from .decoding import detect_language as detect_language_function, decode as decode_function
+from .GNN import GCN
 
 
 @dataclass
@@ -194,6 +196,215 @@ class TextDecoder(nn.Module):
 
         return logits
 
+    def get_states(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
+        """
+        x : torch.LongTensor, shape = (batch_size, <= n_ctx)
+            the text tokens
+        xa : torch.Tensor, shape = (batch_size, n_mels, n_audio_ctx)
+            the encoded audio features to be attended on
+        """
+        offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
+        x = self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]]
+        x = x.to(xa.dtype)
+
+        for block in self.blocks:
+            x = block(x, xa, mask=self.mask, kv_cache=kv_cache)
+
+        x = self.ln(x)
+        logits = (x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)).float()
+
+        return logits, x
+
+
+class WhisperBiasing(nn.Module):
+    def __init__(self, whisper, tokenizer, embdim, hiddim, attndim, nvocab, Bdrop=0.0, biasing=False,
+                 GNNtype="none", GNNdim=0):
+        super().__init__()
+        self.whisper = whisper
+        self.tokenizer = tokenizer
+        self.eos = self.tokenizer.tokenizer.eos_token_id
+        self.treehid = embdim if GNNdim == 0 else GNNdim
+
+        # GNN module
+        self.GNNtype = GNNtype
+        self.GNN = None
+        if GNNtype != "none":
+            # gcn3 means using GCN with 3 layers
+            if GNNtype.startswith("gcn"):
+                self.GNN = GCN(
+                    embdim,
+                    self.treehid,
+                    int(self.GNNtype[3:]),
+                    Bdrop,
+                    residual=False,
+                )
+            lecun_normal_init_parameters(self.GNN)
+
+        self.hiddim = hiddim
+        self.attndim = attndim
+        self.nvocab = nvocab
+        self.Qproj = torch.nn.Linear(self.hiddim, self.attndim)
+        self.Kproj = torch.nn.Linear(self.treehid, self.attndim)
+        self.pointer_gate = torch.nn.Linear(self.attndim + self.hiddim, 1)
+        self.ooKBemb = torch.nn.Embedding(1, self.treehid)
+        self.Bdrop = torch.nn.Dropout(Bdrop)
+        self.biasing = biasing
+
+        lecun_normal_init_parameters(self.Qproj)
+        lecun_normal_init_parameters(self.Kproj)
+        lecun_normal_init_parameters(self.pointer_gate)
+        lecun_normal_init_parameters(self.ooKBemb)
+
+    def get_step_biasing_embs_prefix(self, yseq, trees, origTries):
+        ooKB_id = self.nvocab
+        p_gen_mask = []
+        maxlen = 0
+        index_list = []
+        new_trees = []
+        masks_list = []
+        step_embs = []
+        for i, char_idx in enumerate(yseq):
+            new_tree = trees[i][0]
+            char_idx = char_idx.item()
+            extended_list = []
+            if char_idx == self.eos:
+                new_tree = origTries[i].copy()
+                index_list.append(list(new_tree[0].keys()))
+            elif char_idx > 0 and self.tokenizer.decode([char_idx]).startswith(' '):
+                new_tree =  origTries[i].copy()
+                if char_idx not in new_tree[0]:
+                    index_list.append(list(new_tree[0].keys()))
+                else:
+                    new_tree = new_tree[0][char_idx]
+                    index_list.append(list(new_tree[0].keys()))
+                    if new_tree[1] != -1:
+                        index_list[-1].extend(list(origTries[i][0].keys()))
+                        extended_list = list(origTries[i][0].keys())
+            else:
+                if char_idx not in new_tree:
+                    new_tree = origTries[i].copy()
+                    index_list.append(list(new_tree[0].keys()))
+                else:
+                    new_tree = new_tree[char_idx]
+                    index_list.append(list(new_tree[0].keys()))
+                    if new_tree[1] != -1:
+                         index_list[-1].extend(list(origTries[i][0].keys()))
+                         extended_list = list(origTries[i][0].keys())
+            if char_idx > 0:
+                p_gen_mask.append(0)
+            else:
+                p_gen_mask.append(1)
+            new_trees.append(new_tree)
+            if len(index_list[-1]) > maxlen:
+                maxlen = len(index_list[-1])
+
+            if getattr(self, "GNN", None) is not None:
+                step_emb = [new_tree[0][key][3] for key in new_tree[0].keys()]
+                if extended_list != []:
+                    step_emb.extend([origTries[i][0][key][3] for key in extended_list])
+                if len(step_emb) > 0:
+                    step_embs.append(torch.cat(step_emb, dim=0))
+                else:
+                    step_embs.append(to_device(self, torch.empty(0, self.tree_hid)))
+
+        maxlen += 1
+        step_mask = []
+        back_transform = torch.zeros(len(new_trees), maxlen, ooKB_id+1, device=yseq.device)
+        ones_mat = torch.ones(back_transform.size(), device=yseq.device)
+        for i, indices in enumerate(index_list):
+            step_mask.append(len(indices) * [0] + (maxlen - len(indices) - 1) * [1] + [0])
+            if getattr(self, "GNN", None) is not None:
+                pad_embs = self.ooKBemb.weight.repeat(maxlen-len(indices), 1)
+                step_embs[i] = torch.cat([step_embs[i], pad_embs], dim=0)
+            indices += [ooKB_id] * (maxlen - len(indices))
+        step_mask = torch.tensor(step_mask).byte().to(yseq.device)
+        index_list = torch.LongTensor(index_list).to(yseq.device)
+        back_transform.scatter_(dim=-1, index=index_list.unsqueeze(-1), src=ones_mat)
+        if getattr(self, "GNN", None) is not None:
+            step_embs = torch.stack(step_embs)
+
+        return step_mask, step_embs, new_trees, p_gen_mask, back_transform, index_list
+
+    def get_meetingKB_emb_map(
+            self,
+            query,
+            meeting_mask,
+            back_transform,
+            index_list,
+            meeting_KB=[],
+        ):
+        if getattr(self, "GNN", None) is None or meeting_KB == []:
+            meeting_KB = torch.cat([self.whisper.decoder.token_embedding.weight.data, self.ooKBemb.weight], dim=0)
+            meeting_KB = meeting_KB[index_list]
+        meeting_KB = self.Bdrop(self.Kproj(meeting_KB))
+        KBweight = torch.einsum('ijk,ik->ij', meeting_KB, query)
+        KBweight = KBweight / math.sqrt(query.size(-1))
+        KBweight.masked_fill_(meeting_mask.bool(), -1e9)
+        KBweight = torch.nn.functional.softmax(KBweight, dim=-1)
+        if meeting_KB.size(1) > 1:
+            KBembedding = torch.einsum('ijk,ij->ik', meeting_KB[:,:-1,:], KBweight[:,:-1])
+        else:
+            KBembedding = KBweight.new_zeros(meeting_KB.size(0), meeting_KB.size(-1))
+        KBweight = torch.einsum('ijk,ij->ik', back_transform, KBweight)
+        return KBembedding, KBweight
+
+    def calc_ptr_loss(self, ptr_dist, model_dist, ptr_gen, ptr_gen_mask,
+                      targets, ignore_idx=-100, reduction_str='none'):
+        ptr_gen = ptr_gen.squeeze(-1).masked_fill(ptr_gen_mask.bool(), 0).reshape(-1, 1)
+        # the gap to 1 is the prob for <unk>, which indicates not in the KB
+        ptr_gen_complement = (ptr_dist[:,:,-1].reshape(targets.size(0), -1)) * ptr_gen
+        # print((ptr_dist[:,:,:-1].reshape(targets.size(0), -1) * ptr_gen).sum(-1).max())
+        p_final = ptr_dist[:,:,:-1].reshape(targets.size(0), -1) * ptr_gen + model_dist * (1 - ptr_gen + ptr_gen_complement)
+        p_loss = F.nll_loss(torch.log(p_final+1e-9), targets,
+                            ignore_index=ignore_idx, reduction=reduction_str)
+        p_loss = p_loss.sum() / (p_loss != 0).sum()
+        return p_loss, p_final
+
+    def forward(self, fbank, targets, targetmask, lextree, sotlen):
+        # Forwarding model
+        with torch.no_grad():
+            logits, hidden = self.whisper.getstates(fbank, targets * targetmask)
+
+        if self.biasing:
+            # Forward GNN first
+            if getattr(self, "GNN", None) is not None:
+                self.whisper.decoder.token_embedding.weight.requires_grad = False
+                self.GNN(lextree, self.whisper.decoder.token_embedding)
+            # Duplicate lextree
+            lextrees = [lextree for i in range(targets.size(0))]
+
+            hptrs = []
+            tcpgen_dists = []
+            p_gen_masks = []
+            trees = lextrees
+            query = self.Bdrop(self.Qproj(hidden))
+            for i in range(query.size(1)):
+                step_mask, step_embs, trees, p_gen_mask, back_transform, index_list = self.get_step_biasing_embs_prefix(
+                    targets[:, i], trees, lextrees)
+                hptr, tcpgen_dist = self.get_meetingKB_emb_map(
+                    query[:, i], step_mask, back_transform, index_list, meeting_KB=step_embs)
+                hptrs.append(hptr)
+                tcpgen_dists.append(tcpgen_dist)
+                p_gen_masks.append(p_gen_mask)
+            Hptr = torch.stack(hptrs, dim=1) # nutts * seq * hiddim
+            tcpgen_dist = torch.stack(tcpgen_dists, dim=1)
+            gen_prob = torch.sigmoid(self.pointer_gate(torch.cat([Hptr, hidden], dim=-1)))
+            p_gen_masks = torch.tensor(p_gen_masks).to(query.device).byte().t()
+
+            model_dist = torch.softmax(logits[:, sotlen-1:-1], dim=-1)
+            model_dist = model_dist.view(-1, model_dist.size(-1))
+            loss, output = self.calc_ptr_loss(
+                tcpgen_dist[:, sotlen-1:-1],
+                model_dist,
+                gen_prob[:, sotlen-1:-1],
+                p_gen_masks[:, sotlen-1:-1],
+                targets[:, sotlen:].reshape(-1),
+            )
+        else:
+            output = torch.log_softmax(logits[:, sotlen-1:-1], dim=-1)
+            loss = F.nll_loss(output.view(-1, output.size(-1)), targets[:, sotlen:].reshape(-1))
+        return loss, output
+
 
 class Whisper(nn.Module):
     def __init__(self, dims: ModelDimensions):
@@ -222,6 +433,9 @@ class Whisper(nn.Module):
 
     def forward(self, mel: torch.Tensor, tokens: torch.Tensor) -> Dict[str, torch.Tensor]:
         return self.decoder(tokens, self.encoder(mel))
+
+    def getstates(self, mel: torch.Tensor, tokens: torch.Tensor)  -> Dict[str, torch.Tensor]:
+        return self.decoder.get_states(tokens, self.encoder(mel))
 
     @property
     def device(self):
@@ -266,3 +480,26 @@ class Whisper(nn.Module):
     detect_language = detect_language_function
     transcribe = transcribe_function
     decode = decode_function
+
+
+def lecun_normal_init_parameters(module):
+    """Initialize parameters in the LeCun's manner."""
+    for p in module.parameters():
+        data = p.data
+        if data.dim() == 1:
+            # bias
+            data.zero_()
+        elif data.dim() == 2:
+            # linear weight
+            n = data.size(1)
+            stdv = 1.0 / math.sqrt(n)
+            data.normal_(0, stdv)
+        elif data.dim() in (3, 4):
+            # conv weight
+            n = data.size(1)
+            for k in data.size()[2:]:
+                n *= k
+            stdv = 1.0 / math.sqrt(n)
+            data.normal_(0, stdv)
+        else:
+            raise NotImplementedError
