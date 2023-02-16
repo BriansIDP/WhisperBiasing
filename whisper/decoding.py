@@ -311,10 +311,7 @@ class BeamSearchDecoder(TokenDecoder):
         if self.finished_sequences is None:  # for the first update
             self.finished_sequences = [{} for _ in range(n_audio)]
 
-        if not self.biasing:
-            logprobs = F.log_softmax(logits.float(), dim=-1)
-        else:
-            logprobs = logits
+        logprobs = logits
         next_tokens, source_indices, finished_sequences = [], [], []
         for i in range(n_audio):
             scores, sources, finished = {}, {}, {}
@@ -619,7 +616,7 @@ class DecodingTask:
         sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
         no_speech_probs = [np.nan] * n_batch
         if self.biasing:
-            origtrees = [self.origtree for _ in range(self.beam_size)]
+            origtrees = [self.origtree for _ in range(self.beam_size * n_batch)]
             treetracks = origtrees
 
         try:
@@ -653,6 +650,8 @@ class DecodingTask:
                     # print((tcpgen_dist[:,:-1] * gen_prob).sum(dim=-1))
                     # print(tokens)
                     logits = torch.log(tcpgen_dist[:,:-1] * gen_prob + modeldist * (1 - gen_prob + ptr_gen_complement))
+                else:
+                    logits = F.log_softmax(logits)
 
                 # expand the tokens tensor with the selected next tokens
                 tokens, completed, source_indices = self.decoder.update(tokens, logits, sum_logprobs)

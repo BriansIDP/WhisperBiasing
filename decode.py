@@ -60,6 +60,10 @@ for idx, data in enumerate(testloader):
     uttnames, fbank, tgt, blist = data
     fbank = fbank.to(model.device)
     origtree = biasproc.get_lextree(blist)
+
+    if biasing_model is not None and getattr(biasing_model, "GNN", None) is not None:
+        biasing_model.GNN(origtree, model.decoder.token_embedding)
+
     options = whisper.DecodingOptions(
         language="en",
         without_timestamps=True,

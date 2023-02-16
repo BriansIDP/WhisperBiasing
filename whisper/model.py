@@ -218,7 +218,7 @@ class TextDecoder(nn.Module):
 
 class WhisperBiasing(nn.Module):
     def __init__(self, whisper, tokenizer, embdim, hiddim, attndim, nvocab, Bdrop=0.0, biasing=False,
-                 GNNtype="none", GNNdim=0):
+                 GNNtype="none", GNNdim=0, useGPT=False, GPThiddim=0):
         super().__init__()
         self.whisper = whisper
         self.tokenizer = tokenizer
@@ -243,9 +243,15 @@ class WhisperBiasing(nn.Module):
         self.hiddim = hiddim
         self.attndim = attndim
         self.nvocab = nvocab
-        self.Qproj = torch.nn.Linear(self.hiddim, self.attndim)
+        self.useGPT = useGPT
+        self.GPThiddim = GPThiddim
+        if not useGPT:
+            self.Qproj = torch.nn.Linear(self.hiddim, self.attndim)
+            self.pointer_gate = torch.nn.Linear(self.attndim + self.hiddim, 1)
+        else:
+            self.Qproj = torch.nn.Linear(self.hiddim + self.GPThiddim, self.attndim)
+            self.pointer_gate = torch.nn.Linear(self.attndim + self.hiddim + self.GPThiddim, 1)
         self.Kproj = torch.nn.Linear(self.treehid, self.attndim)
-        self.pointer_gate = torch.nn.Linear(self.attndim + self.hiddim, 1)
         self.ooKBemb = torch.nn.Embedding(1, self.treehid)
         self.Bdrop = torch.nn.Dropout(Bdrop)
         self.biasing = biasing
@@ -360,7 +366,7 @@ class WhisperBiasing(nn.Module):
         p_loss = p_loss.sum() / (p_loss != 0).sum()
         return p_loss, p_final
 
-    def forward(self, fbank, targets, targetmask, lextree, sotlen):
+    def forward(self, fbank, targets, targetmask, lextree, sotlen, GPThidden=None):
         # Forwarding model
         with torch.no_grad():
             logits, hidden = self.whisper.getstates(fbank, targets * targetmask)
@@ -377,7 +383,10 @@ class WhisperBiasing(nn.Module):
             tcpgen_dists = []
             p_gen_masks = []
             trees = lextrees
-            query = self.Bdrop(self.Qproj(hidden))
+            if self.useGPT:
+                query = self.Bdrop(self.Qproj(torch.cat([hidden, GPThidden], dim=-1)))
+            else:
+                query = self.Bdrop(self.Qproj(hidden))
             for i in range(query.size(1)):
                 step_mask, step_embs, trees, p_gen_mask, back_transform, index_list = self.get_step_biasing_embs_prefix(
                     targets[:, i], trees, lextrees)
@@ -388,7 +397,10 @@ class WhisperBiasing(nn.Module):
                 p_gen_masks.append(p_gen_mask)
             Hptr = torch.stack(hptrs, dim=1) # nutts * seq * hiddim
             tcpgen_dist = torch.stack(tcpgen_dists, dim=1)
-            gen_prob = torch.sigmoid(self.pointer_gate(torch.cat([Hptr, hidden], dim=-1)))
+            if self.useGPT:
+                gen_prob = torch.sigmoid(self.pointer_gate(torch.cat([Hptr, hidden, GPThidden], dim=-1)))
+            else:
+                gen_prob = torch.sigmoid(self.pointer_gate(torch.cat([Hptr, hidden], dim=-1)))
             p_gen_masks = torch.tensor(p_gen_masks).to(query.device).byte().t()
 
             model_dist = torch.softmax(logits[:, sotlen-1:-1], dim=-1)
