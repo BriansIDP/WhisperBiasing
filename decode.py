@@ -8,6 +8,7 @@ import whisper
 import editdistance
 from dataloader import get_dataloader, BiasingProcessor
 from whisper.model import WhisperBiasing
+from transformers import GPT2Tokenizer, GPT2Model
 
 parser = argparse.ArgumentParser(description = 'Running Whisper experiments')
 
@@ -32,6 +33,12 @@ if args.loadfrom != '':
     biasing_model = torch.load(args.loadfrom)
     biasing_model.eval()
     model = biasing_model.whisper
+    useGPT = biasing_model.useGPT
+    shallowfusion = args.use_gpt2
+    GPT2 = None
+    if useGPT or args.use_gpt2:
+        GPTmodel = GPT2Model.from_pretrained('gpt2').to(model.device)
+        GPThiddim = GPTmodel.config.n_embd
 else:
     model = whisper.load_model("base.en").eval()
     biasing_model = None
@@ -73,6 +80,9 @@ for idx, data in enumerate(testloader):
         biasingmodule=biasing_model,
         origtree=origtree,
         fp16=False,
+        shallowfusion=shallowfusion,
+        useGPT=useGPT,
+        GPT2=GPT2,
     )
     result = whisper.decode(model, fbank, options)
     for i, utt in enumerate(tgt):

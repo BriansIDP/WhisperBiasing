@@ -103,6 +103,10 @@ class DecodingOptions:
     biasing: bool = False
     biasingmodule: torch.nn.Module = None
     origtree: list = None
+    # Shallow fusion
+    useGPT: bool = False
+    shallowfusion: bool = False
+    GPT2: torch.nn.Module = None
 
 
 @dataclass(frozen=True)
@@ -481,6 +485,11 @@ class DecodingTask:
             self.biasing = True
             self.biasingmodule = options.biasingmodule
             self.origtree = options.origtree
+        # For shallow fusion
+        self.useGPT = self.options.useGPT
+        self.shallowfusion = self.options.shallowfusion
+        if self.options.shallowfusion or self.options.useGPT:
+            self.GPT2 = self.options.GPT2
 
         self.n_group: int = options.beam_size or options.best_of or 1
         self.n_ctx: int = model.dims.n_text_ctx
