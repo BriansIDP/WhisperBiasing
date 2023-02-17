@@ -621,6 +621,7 @@ class DecodingTask:
 
     def _main_loop(self, audio_features: Tensor, tokens: Tensor):
         assert audio_features.shape[0] == tokens.shape[0]
+        sotlen = tokens.size(-1)
         n_batch = tokens.shape[0]
         sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
         no_speech_probs = [np.nan] * n_batch
@@ -632,12 +633,26 @@ class DecodingTask:
             for i in range(self.sample_len):
                 if self.biasing:
                     logits, hidden = self.inference.getstates(tokens, audio_features)
-                    query = self.biasingmodule.Qproj(hidden[:, -1])
+                    if self.useGPT:
+                        if i > 0:
+                            labels = tokens[:, sotlen:]
+                            atten_mask = tokens.new_ones(labels.size())
+                            GPTinput = {"input_ids": labels, "attention_mask": atten_mask}
+                            GPToutput = self.GPT2(**GPTinput)
+                            GPThid = GPToutput.last_hidden_state[:, -1]
+                        else:
+                            GPThid = audio_features.new_zeros(tokens.size(0), self.biasingmodule.GPThiddim)
+                        query = self.biasingmodule.Qproj(torch.cat([hidden[:, -1], GPThid], dim=-1))
+                    else:
+                        query = self.biasingmodule.Qproj(hidden[:, -1])
                     step_mask, step_embs, treetracks, p_gen_mask, back_transform, index_list = self.biasingmodule.get_step_biasing_embs_prefix(
                         tokens[:, -1], treetracks, origtrees)
                     hptr, tcpgen_dist = self.biasingmodule.get_meetingKB_emb_map(
                         query, step_mask, back_transform, index_list, meeting_KB=step_embs)
-                    gen_prob = torch.sigmoid(self.biasingmodule.pointer_gate(torch.cat([hptr, hidden[:, -1]], dim=-1)))
+                    if self.useGPT:
+                        gen_prob = torch.sigmoid(self.biasingmodule.pointer_gate(torch.cat([hptr, hidden[:, -1], GPThid], dim=-1)))
+                    else:
+                        gen_prob = torch.sigmoid(self.biasingmodule.pointer_gate(torch.cat([hptr, hidden[:, -1]], dim=-1)))
                 else:
                     logits = self.inference.logits(tokens, audio_features)
 
@@ -656,8 +671,8 @@ class DecodingTask:
                 if self.biasing:
                     modeldist = torch.softmax(logits, dim=-1)
                     ptr_gen_complement = tcpgen_dist[:,-1:] * gen_prob
-                    # print((tcpgen_dist[:,:-1] * gen_prob).sum(dim=-1))
-                    # print(tokens)
+                    print((tcpgen_dist[:,:-1] * gen_prob).sum(dim=-1))
+                    print(tokens)
                     logits = torch.log(tcpgen_dist[:,:-1] * gen_prob + modeldist * (1 - gen_prob + ptr_gen_complement))
                 else:
                     logits = F.log_softmax(logits)

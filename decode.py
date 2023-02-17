@@ -35,7 +35,7 @@ if args.loadfrom != '':
     model = biasing_model.whisper
     useGPT = biasing_model.useGPT
     shallowfusion = args.use_gpt2
-    GPT2 = None
+    GPTmodel = None
     if useGPT or args.use_gpt2:
         GPTmodel = GPT2Model.from_pretrained('gpt2').to(model.device)
         GPThiddim = GPTmodel.config.n_embd
@@ -82,7 +82,7 @@ for idx, data in enumerate(testloader):
         fp16=False,
         shallowfusion=shallowfusion,
         useGPT=useGPT,
-        GPT2=GPT2,
+        GPT2=GPTmodel,
     )
     result = whisper.decode(model, fbank, options)
     for i, utt in enumerate(tgt):

@@ -1,5 +1,5 @@
 . /home/gs534/rds/hpc-work/work/espnet/tools/anaconda/etc/profile.d/conda.sh && conda deactivate && conda activate espnet
-expdir=exp/finetune_librispeech_lr0.0005_KB500_drop0.1
+expdir=exp/finetune_librispeech_lr0.0005_KB200_drop0.1_GPThid
 decodedir=decode_no_lm_b10_KB1000
 mkdir -p $expdir/$decodedir
 python decode.py \
