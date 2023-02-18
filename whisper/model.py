@@ -246,11 +246,10 @@ class WhisperBiasing(nn.Module):
         self.useGPT = useGPT
         self.GPThiddim = GPThiddim
         if not useGPT:
-            self.Qproj = torch.nn.Linear(self.hiddim, self.attndim)
             self.pointer_gate = torch.nn.Linear(self.attndim + self.hiddim, 1)
         else:
-            self.Qproj = torch.nn.Linear(self.hiddim + self.GPThiddim, self.attndim)
-            self.pointer_gate = torch.nn.Linear(self.attndim + self.hiddim + self.GPThiddim, 1)
+            self.pointer_gate = torch.nn.Linear(self.attndim + self.hiddim + self.GPThiddim, 3)
+        self.Qproj = torch.nn.Linear(self.hiddim, self.attndim)
         self.Kproj = torch.nn.Linear(self.treehid, self.attndim)
         self.ooKBemb = torch.nn.Embedding(1, self.treehid)
         self.Bdrop = torch.nn.Dropout(Bdrop)
@@ -383,10 +382,7 @@ class WhisperBiasing(nn.Module):
             tcpgen_dists = []
             p_gen_masks = []
             trees = lextrees
-            if self.useGPT:
-                query = self.Bdrop(self.Qproj(torch.cat([hidden, GPThidden], dim=-1)))
-            else:
-                query = self.Bdrop(self.Qproj(hidden))
+            query = self.Bdrop(self.Qproj(hidden))
             for i in range(query.size(1)):
                 step_mask, step_embs, trees, p_gen_mask, back_transform, index_list = self.get_step_biasing_embs_prefix(
                     targets[:, i], trees, lextrees)
@@ -398,12 +394,17 @@ class WhisperBiasing(nn.Module):
             Hptr = torch.stack(hptrs, dim=1) # nutts * seq * hiddim
             tcpgen_dist = torch.stack(tcpgen_dists, dim=1)
             if self.useGPT:
-                gen_prob = torch.sigmoid(self.pointer_gate(torch.cat([Hptr, hidden, GPThidden], dim=-1)))
+                GPThid, GPTdist = GPThidden
+                gen_prob = torch.softmax(self.pointer_gate(torch.cat([Hptr, hidden, GPThid], dim=-1)), dim=-1)
             else:
                 gen_prob = torch.sigmoid(self.pointer_gate(torch.cat([Hptr, hidden], dim=-1)))
             p_gen_masks = torch.tensor(p_gen_masks).to(query.device).byte().t()
 
             model_dist = torch.softmax(logits[:, sotlen-1:-1], dim=-1)
+            if self.useGPT:
+                model_dist = model_dist * gen_prob[:, sotlen-1:-1, 0:1] + GPTdist * gen_prob[:, sotlen-1:-1, 1:2]
+                model_dist = model_dist / gen_prob[:, sotlen-1:-1, 0:2].sum(dim=-1, keepdim=True)
+                gen_prob = gen_prob[:, :, -1:]
             model_dist = model_dist.view(-1, model_dist.size(-1))
             loss, output = self.calc_ptr_loss(
                 tcpgen_dist[:, sotlen-1:-1],

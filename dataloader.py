@@ -125,7 +125,10 @@ class BiasingProcessor(object):
         if self.drop > 0:
             uttblist = random.sample(uttblist, int(len(uttblist) * (1 - self.drop)))
         uttblist = [tuple(bword) for bword in uttblist]
-        pool = random.sample(self.all_rare_words, self.ndistractors)
+        if self.ndistractors < len(self.all_rare_words):
+            pool = random.sample(self.all_rare_words, self.ndistractors)
+        else:
+            pool = self.all_rare_words
         for word in pool:
             if word not in uttblist:
                 uttblist.append(word)

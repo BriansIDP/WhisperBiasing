@@ -13,7 +13,7 @@ with open("word_freq.txt") as fin:
         word, freq = line.split()
         freqlist[word.upper()] = int(freq)
 
-with open("../data/SLURP/Blist/rarewords_f30.txt") as fin:
+with open("../data/SLURP/Blist/rarewords_error_oov.txt") as fin:
 # with open("../data/LibriSpeech/Blist/all_rare_words.txt") as fin:
 # with open("/home/dawna/gs534/espnet/egs/librispeech/asr1/data/KBs/KBfull_list_chapter_{}.txt".format(setname)) as fin:
     rareset = set()

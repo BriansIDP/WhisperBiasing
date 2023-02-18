@@ -671,8 +671,8 @@ class DecodingTask:
                 if self.biasing:
                     modeldist = torch.softmax(logits, dim=-1)
                     ptr_gen_complement = tcpgen_dist[:,-1:] * gen_prob
-                    print((tcpgen_dist[:,:-1] * gen_prob).sum(dim=-1))
-                    print(tokens)
+                    # print((tcpgen_dist[:,:-1] * gen_prob).sum(dim=-1))
+                    # print(tokens)
                     logits = torch.log(tcpgen_dist[:,:-1] * gen_prob + modeldist * (1 - gen_prob + ptr_gen_complement))
                 else:
                     logits = F.log_softmax(logits)

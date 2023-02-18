@@ -11,7 +11,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import SGD, Adam
 from transformers import WhisperTokenizer
-from transformers import GPT2Tokenizer, GPT2Model
+from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
 
 parser = argparse.ArgumentParser(description = 'Running Whisper experiments')
 
@@ -58,8 +58,10 @@ else:
     model = whisper.load_model(args.modeltype)
 model.train()
 if args.useGPT:
-    GPTmodel = GPT2Model.from_pretrained('gpt2').to(model.device)
+    # GPTmodel = GPT2Model.from_pretrained('gpt2').to(model.device)
+    GPTmodel = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True).to(model.device)
     GPThiddim = GPTmodel.config.n_embd
+    GPTtokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 else:
     GPThiddim = 0
 
@@ -113,20 +115,36 @@ for epoch in range(args.nepochs):
         fbank = fbank.to(model.device)
         origtarget = [torch.tensor(list(sot_sequence) + y, dtype=torch.long) for y in tgt]
         GPT_last_hidden = None
+        GPT_distribution = None
         target = pad_sequence(origtarget, batch_first=True, padding_value=-100).to(model.device)
         targetmask = target != -100
         if args.useGPT:
             with torch.no_grad():
-                GPTtarget = {"input_ids": (target*targetmask)[:, 2:-1], "attention_mask": targetmask[:, 2:-1]}
+                # Replace Whisper bos token with GPT2 bos token
+                GPTtarget_ids = (target*targetmask)[:, sotlen-1:-1]
+                GPTtarget_ids[:, 0] = GPTtokenizer.bos_token_id
+                GPTtarget = {"input_ids": GPTtarget_ids, "attention_mask": targetmask[:, sotlen-1:-1]}
+
+                # Get GPT states
                 GPToutputs = GPTmodel(**GPTtarget)
-                GPT_last_hidden = GPToutputs.last_hidden_state
+                GPT_last_hidden = GPToutputs.hidden_states[-1]
+                GPT_distribution = torch.softmax(GPToutputs.logits, dim=-1)
+
+                # Need to pad GPT2 distribution to be the same vocab size as Whisper distribution using zero padding
+                zeropadding_dist = GPT_distribution.new_zeros(GPT_distribution.size(0), GPT_distribution.size(1),
+                    whisperbiasing.nvocab-GPT_distribution.size(2))
+                GPT_distribution = torch.cat([GPT_distribution, zeropadding_dist], dim=-1)
+
+                # Need to pad the sequence with zeros
                 zeropadding = torch.zeros(GPT_last_hidden.size(0), 1, GPT_last_hidden.size(-1)).to(model.device)
-                GPT_last_hidden = torch.cat([zeropadding for _ in range(sotlen)] + [GPT_last_hidden, zeropadding], dim=1)
+                GPT_last_hidden = torch.cat([zeropadding for _ in range(sotlen-1)] + [GPT_last_hidden, zeropadding], dim=1)
 
         optimiser.zero_grad()
 
         # Forward the biasing model
-        loss, p_final = whisperbiasing(fbank, target, targetmask, lextree, sotlen, GPThidden=GPT_last_hidden)
+        loss, p_final = whisperbiasing(fbank, target, targetmask, lextree, sotlen,
+            GPThidden=(GPT_last_hidden, GPT_distribution))
+        loss = loss / args.accumgrad
 
         loss.backward()
         totalloss += loss.item()
@@ -162,14 +180,28 @@ for epoch in range(args.nepochs):
             target = pad_sequence(target, batch_first=True, padding_value=-100).to(model.device)
             targetmask = target != -100
             if args.useGPT:
-                GPTtarget = {"input_ids": (target*targetmask)[:, 2:-1], "attention_mask": targetmask[:, 2:-1]}
+                # Replace Whisper bos token with GPT2 bos token
+                GPTtarget_ids = (target*targetmask)[:, sotlen-1:-1]
+                GPTtarget_ids[:, 0] = GPTtokenizer.bos_token_id
+                GPTtarget = {"input_ids": GPTtarget_ids, "attention_mask": targetmask[:, sotlen-1:-1]}
+
+                # Get GPT states
                 GPToutputs = GPTmodel(**GPTtarget)
-                GPT_last_hidden = GPToutputs.last_hidden_state
+                GPT_last_hidden = GPToutputs.hidden_states[-1]
+                GPT_distribution = torch.softmax(GPToutputs.logits, dim=-1)
+
+                # Need to pad GPT2 distribution to be the same vocab size as Whisper distribution using zero padding
+                zeropadding_dist = GPT_distribution.new_zeros(GPT_distribution.size(0), GPT_distribution.size(1),
+                    whisperbiasing.nvocab-GPT_distribution.size(2))
+                GPT_distribution = torch.cat([GPT_distribution, zeropadding_dist], dim=-1)
+
+                # Need to pad the sequence with zeros
                 zeropadding = torch.zeros(GPT_last_hidden.size(0), 1, GPT_last_hidden.size(-1)).to(model.device)
-                GPT_last_hidden = torch.cat([zeropadding for _ in range(sotlen)] + [GPT_last_hidden, zeropadding], dim=1)
+                GPT_last_hidden = torch.cat([zeropadding for _ in range(sotlen-1)] + [GPT_last_hidden, zeropadding], dim=1)
 
             # Forward biasing model
-            loss, output = whisperbiasing(fbank, target, targetmask, lextree, sotlen, GPThidden=GPT_last_hidden)
+            loss, output = whisperbiasing(fbank, target, targetmask, lextree, sotlen,
+                GPThidden=(GPT_last_hidden, GPT_distribution))
 
             target = target[:, sotlen:]
             output = output.view(target.size(0), target.size(1), -1).max(dim=-1)[1]
@@ -180,6 +212,7 @@ for epoch in range(args.nepochs):
             if idx % 50 == 0 and idx > 0:
                 logging("{} out of {} finished | time elapsed {} | ACC: {}".format(
                     idx, len(devloader), time.time()-start, totalvalacc/totalvalset), args.logfile)
+        logging("Total ACC: {}".format(totalvalacc/totalvalset), args.logfile)
 
         totalacc = totalvalacc / totalvalset
     if totalacc > bestacc:
