@@ -8,7 +8,7 @@ import whisper
 import editdistance
 from dataloader import get_dataloader, BiasingProcessor
 from whisper.model import WhisperBiasing
-from transformers import GPT2Tokenizer, GPT2Model
+from transformers import GPT2Tokenizer, GPT2LMHeadModel
 from whisper.normalizers.english import EnglishTextNormalizer
 
 parser = argparse.ArgumentParser(description = 'Running Whisper experiments')
@@ -16,12 +16,14 @@ parser = argparse.ArgumentParser(description = 'Running Whisper experiments')
 # set arguments for training and decoding. 
 parser.add_argument('--seed', type=int, default=123)
 parser.add_argument('--test_json', type=str, default="data/LibriSpeech/test_clean.json")
+parser.add_argument('--device', type=str, default="cuda:0")
 parser.add_argument('--beamsize', type=int, default=3)
 parser.add_argument('--eval_batch_size', type=int, default=1)
 parser.add_argument('--expdir', type=str, default="exp/origmodel")
 parser.add_argument('--loadfrom', type=str, default="")
 parser.add_argument('--biasing', action="store_true")
 parser.add_argument('--use_gpt2', action="store_true")
+parser.add_argument('--lm_weight', type=float, default=0)
 parser.add_argument('--deepbiasing', action="store_true")
 parser.add_argument('--attndim', type=int, default=256)
 parser.add_argument('--biasinglist', type=str, default="data/LibriSpeech/Blist/rareword_f15.txt")
@@ -29,17 +31,19 @@ parser.add_argument('--maxKBlen', type=int, default=1)
 parser.add_argument('--dropentry', type=float, default=0.0)
 args = parser.parse_args()
 
+shallowfusion = args.use_gpt2
+useGPT = None
+if args.use_gpt2:
+    GPTmodel = GPT2LMHeadModel.from_pretrained('gpt2').to(args.device)
+    GPThiddim = GPTmodel.config.n_embd
+else:
+    GPTmodel = None
 
 if args.loadfrom != '':
     biasing_model = torch.load(args.loadfrom)
     biasing_model.eval()
     model = biasing_model.whisper
     useGPT = biasing_model.useGPT
-    shallowfusion = args.use_gpt2
-    GPTmodel = None
-    if useGPT or args.use_gpt2:
-        GPTmodel = GPT2Model.from_pretrained('gpt2').to(model.device)
-        GPThiddim = GPTmodel.config.n_embd
 else:
     model = whisper.load_model("base.en").eval()
     biasing_model = None
@@ -85,6 +89,7 @@ for idx, data in enumerate(testloader):
         shallowfusion=shallowfusion,
         useGPT=useGPT,
         GPT2=GPTmodel,
+        lm_weight=args.lm_weight,
     )
     result = whisper.decode(model, fbank, options)
     for i, utt in enumerate(tgt):

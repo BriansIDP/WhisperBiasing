@@ -107,6 +107,7 @@ class DecodingOptions:
     useGPT: bool = False
     shallowfusion: bool = False
     GPT2: torch.nn.Module = None
+    lm_weight: float = 0
 
 
 @dataclass(frozen=True)
@@ -676,6 +677,15 @@ class DecodingTask:
                     logits = torch.log(tcpgen_dist[:,:-1] * gen_prob + modeldist * (1 - gen_prob + ptr_gen_complement))
                 else:
                     logits = F.log_softmax(logits)
+
+                if (self.shallowfusion or self.useGPT) and self.options.lm_weight > 0:
+                    if tokens.shape[1] > 2:
+                        gpt2_logits = self.GPT2(tokens[:, 2:]).logits[:, -1]
+                        gpt2_logits_mins = torch.min(gpt2_logits, dim=-1).values
+                        gpt2_logits_mins = gpt2_logits_mins.unsqueeze(-1).repeat(1, 1607)
+                        gpt2_logits = torch.cat((gpt2_logits, gpt2_logits_mins), dim=-1)
+                        gpt2_logits = F.log_softmax(gpt2_logits, dim=-1)
+                        logits += self.options.lm_weight * gpt2_logits
 
                 # expand the tokens tensor with the selected next tokens
                 tokens, completed, source_indices = self.decoder.update(tokens, logits, sum_logprobs)
