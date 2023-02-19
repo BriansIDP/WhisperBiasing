@@ -681,10 +681,9 @@ class DecodingTask:
                 if (self.shallowfusion or self.useGPT) and self.options.lm_weight > 0:
                     if tokens.shape[1] > 2:
                         gpt2_logits = self.GPT2(tokens[:, 2:]).logits[:, -1]
-                        gpt2_logits_mins = torch.min(gpt2_logits, dim=-1).values
-                        gpt2_logits_mins = gpt2_logits_mins.unsqueeze(-1).repeat(1, 1607)
-                        gpt2_logits = torch.cat((gpt2_logits, gpt2_logits_mins), dim=-1)
+                        gpt2_logits = F.pad(gpt2_logits, (0, 1607), value=-float('inf'))
                         gpt2_logits = F.log_softmax(gpt2_logits, dim=-1)
+
                         logits += self.options.lm_weight * gpt2_logits
 
                 # expand the tokens tensor with the selected next tokens
