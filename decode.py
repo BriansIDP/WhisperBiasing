@@ -9,7 +9,6 @@ import editdistance
 from dataloader import get_dataloader, BiasingProcessor
 from whisper.model import WhisperBiasing
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
-from whisper.normalizers.english import EnglishTextNormalizer
 
 parser = argparse.ArgumentParser(description = 'Running Whisper experiments')
 
@@ -61,7 +60,6 @@ testloader = get_dataloader(
     shuffle=False,
 )
 biasproc = BiasingProcessor(tokenizer, args.biasinglist, ndistractors=args.maxKBlen, drop=args.dropentry)
-eng_norm = EnglishTextNormalizer()
 
 totalwords = 0
 totalwer = 0
@@ -95,8 +93,8 @@ for idx, data in enumerate(testloader):
     for i, utt in enumerate(tgt):
         uttname = uttnames[i]
         text = result[i].text.lower()
-        text = eng_norm(text).split()
-        refwords = eng_norm(utt).split()
+        text = re.sub("[^a-zA-Z\' ]+", "", text).split()
+        refwords = utt.lower().split()
         we = editdistance.eval(text, refwords)
         totalwords += len(refwords)
         totalwer += we
