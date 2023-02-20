@@ -8,8 +8,8 @@ import whisper
 import editdistance
 from dataloader import get_dataloader, BiasingProcessor
 from whisper.model import WhisperBiasing
-from transformers import GPT2Tokenizer, GPT2LMHeadModel
-import json
+from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
+from whisper.normalizers.english import EnglishTextNormalizer
 
 parser = argparse.ArgumentParser(description = 'Running Whisper experiments')
 
@@ -35,7 +35,7 @@ args = parser.parse_args()
 shallowfusion = args.use_gpt2
 useGPT = None
 if args.use_gpt2:
-    GPTmodel = GPT2LMHeadModel.from_pretrained('gpt2').to(args.device)
+    GPTmodel = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True).to(args.device)
     GPThiddim = GPTmodel.config.n_embd
 else:
     GPTmodel = None
@@ -45,9 +45,13 @@ if args.loadfrom != '':
     biasing_model.eval()
     model = biasing_model.whisper
     useGPT = biasing_model.useGPT
+    if useGPT or args.use_gpt2:
+        GPTtokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 else:
     model = whisper.load_model("base.en").eval()
     biasing_model = None
+    useGPT = False
+shallowfusion = args.use_gpt2
 tokenizer = whisper.tokenizer.get_tokenizer(model.is_multilingual, language="en")
 
 ####################
@@ -91,6 +95,7 @@ for idx, data in enumerate(testloader):
         useGPT=useGPT,
         GPT2=GPTmodel,
         lm_weight=args.lm_weight,
+        GPT2tokenizer=GPTtokenizer,
     )
     result = whisper.decode(model, fbank, options)
     for i, utt in enumerate(tgt):

@@ -108,6 +108,7 @@ class DecodingOptions:
     shallowfusion: bool = False
     GPT2: torch.nn.Module = None
     lm_weight: float = 0
+    GPT2tokenizer: Tokenizer = None
 
 
 @dataclass(frozen=True)
@@ -494,6 +495,7 @@ class DecodingTask:
         self.shallowfusion = self.options.shallowfusion
         if self.options.shallowfusion or self.options.useGPT:
             self.GPT2 = self.options.GPT2
+            self.GPT2tokenizer = self.options.GPT2tokenizer
 
         self.n_group: int = options.beam_size or options.best_of or 1
         self.n_ctx: int = model.dims.n_text_ctx
@@ -638,23 +640,23 @@ class DecodingTask:
                 if self.biasing:
                     logits, hidden = self.inference.getstates(tokens, audio_features)
                     if self.useGPT:
-                        if i > 0:
-                            labels = tokens[:, sotlen:]
-                            atten_mask = tokens.new_ones(labels.size())
-                            GPTinput = {"input_ids": labels, "attention_mask": atten_mask}
-                            GPToutput = self.GPT2(**GPTinput)
-                            GPThid = GPToutput.last_hidden_state[:, -1]
-                        else:
-                            GPThid = audio_features.new_zeros(tokens.size(0), self.biasingmodule.GPThiddim)
-                        query = self.biasingmodule.Qproj(torch.cat([hidden[:, -1], GPThid], dim=-1))
-                    else:
-                        query = self.biasingmodule.Qproj(hidden[:, -1])
+                        # Replace Whisper bos token with GPT2 bos token
+                        labels = tokens[:, sotlen-1:].clone()
+                        labels[:, 0] = self.GPT2tokenizer.bos_token_id
+                        atten_mask = tokens.new_ones(labels.size())
+                        GPTinput = {"input_ids": labels, "attention_mask": atten_mask}
+                        # Get GPT states
+                        GPToutput = self.GPT2(**GPTinput)
+                        GPThid = GPToutput.hidden_states[-1][:, -1]
+                        GPTlogits = GPToutput.logits[:, -1]
+
+                    query = self.biasingmodule.Qproj(hidden[:, -1])
                     step_mask, step_embs, treetracks, p_gen_mask, back_transform, index_list = self.biasingmodule.get_step_biasing_embs_prefix(
                         tokens[:, -1], treetracks, origtrees)
                     hptr, tcpgen_dist = self.biasingmodule.get_meetingKB_emb_map(
                         query, step_mask, back_transform, index_list, meeting_KB=step_embs)
                     if self.useGPT:
-                        gen_prob = torch.sigmoid(self.biasingmodule.pointer_gate(torch.cat([hptr, hidden[:, -1], GPThid], dim=-1)))
+                        gen_prob = torch.softmax(self.biasingmodule.pointer_gate(torch.cat([hptr, hidden[:, -1], GPThid], dim=-1)), dim=-1)
                     else:
                         gen_prob = torch.sigmoid(self.biasingmodule.pointer_gate(torch.cat([hptr, hidden[:, -1]], dim=-1)))
                 else:
@@ -674,12 +676,22 @@ class DecodingTask:
                 # Apply biasing if needed:
                 if self.biasing:
                     modeldist = torch.softmax(logits, dim=-1)
+                    if self.useGPT:
+                        GPT_distribution = torch.softmax(GPTlogits, dim=-1)
+                        # Need to pad GPT2 distribution to be the same vocab size as Whisper distribution using zero padding
+                        zeropadding_dist = GPT_distribution.new_zeros(GPT_distribution.size(0),
+                            self.biasingmodule.nvocab-GPT_distribution.size(1))
+                        GPT_distribution = torch.cat([GPT_distribution, zeropadding_dist], dim=-1)
+
+                        modeldist = modeldist * gen_prob[:, 0:1] + GPT_distribution * gen_prob[:, 1:2]
+                        modeldist = modeldist / gen_prob[:, 0:2].sum(dim=-1, keepdim=True)
+                        gen_prob = gen_prob[:, -1:]
                     ptr_gen_complement = tcpgen_dist[:,-1:] * gen_prob
                     # print((tcpgen_dist[:,:-1] * gen_prob).sum(dim=-1))
                     # print(tokens)
                     logits = torch.log(tcpgen_dist[:,:-1] * gen_prob + modeldist * (1 - gen_prob + ptr_gen_complement))
                 else:
-                    logits = F.log_softmax(logits)
+                    logits = F.log_softmax(logits, dim=-1)
 
                 if (self.shallowfusion or self.useGPT) and self.options.lm_weight > 0:
                     if tokens.shape[1] > 2:

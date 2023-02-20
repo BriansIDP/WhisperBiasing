@@ -1,4 +1,5 @@
 import sys, os
+# from normalizers.english import EnglishTextNormalizer
 
 error_words_freqs = {}
 infile = sys.argv[1]
@@ -6,6 +7,7 @@ infile = sys.argv[1]
 insert_error = 0
 insert_rare = 0
 freqlist_test = {}
+# eng_norm = EnglishTextNormalizer()
 
 freqlist = {}
 with open("word_freq.txt") as fin:
@@ -13,9 +15,10 @@ with open("word_freq.txt") as fin:
         word, freq = line.split()
         freqlist[word.upper()] = int(freq)
 
-with open("../data/SLURP/Blist/rarewords_error_oov.txt") as fin:
+# with open("../data/SLURP/Blist/rarewords_error_oov.txt") as fin:
 # with open("../data/LibriSpeech/Blist/all_rare_words.txt") as fin:
-# with open("/home/dawna/gs534/espnet/egs/librispeech/asr1/data/KBs/KBfull_list_chapter_{}.txt".format(setname)) as fin:
+with open("../data/AMI/Blist/rarewords_f30.txt") as fin:
+# with open("../data/DSTC/Blist/rarewords_error_ontology.txt") as fin:
     rareset = set()
     for line in fin:
         rareset.add(line.strip().upper())
