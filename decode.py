@@ -25,6 +25,7 @@ parser.add_argument('--biasing', action="store_true")
 parser.add_argument('--use_gpt2', action="store_true")
 parser.add_argument('--save_nbest', action="store_true")
 parser.add_argument('--lm_weight', type=float, default=0)
+parser.add_argument('--ilm_weight', type=float, default=0)
 parser.add_argument('--deepbiasing', action="store_true")
 parser.add_argument('--attndim', type=int, default=256)
 parser.add_argument('--biasinglist', type=str, default="data/LibriSpeech/Blist/rareword_f15.txt")
@@ -34,6 +35,7 @@ args = parser.parse_args()
 
 shallowfusion = args.use_gpt2
 useGPT = None
+GPTtokenizer = None
 if args.use_gpt2:
     GPTmodel = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True).to(args.device)
     GPThiddim = GPTmodel.config.n_embd
@@ -44,13 +46,17 @@ if args.loadfrom != '':
     biasing_model = torch.load(args.loadfrom)
     biasing_model.eval()
     model = biasing_model.whisper
-    useGPT = biasing_model.useGPT
+    useGPT = getattr(biasing_model, "useGPT", False)
     if useGPT or args.use_gpt2:
         GPTtokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 else:
     model = whisper.load_model("base.en").eval()
     biasing_model = None
     useGPT = False
+
+ilme_model = None
+if args.use_gpt2 and args.ilm_weight > 0:
+    ilme_model = whisper.load_model("base.en").eval()
 shallowfusion = args.use_gpt2
 tokenizer = whisper.tokenizer.get_tokenizer(model.is_multilingual, language="en")
 
@@ -96,6 +102,8 @@ for idx, data in enumerate(testloader):
         GPT2=GPTmodel,
         lm_weight=args.lm_weight,
         GPT2tokenizer=GPTtokenizer,
+        ilm_weight=args.ilm_weight,
+        ilme_model=ilme_model,
     )
     result = whisper.decode(model, fbank, options)
     for i, utt in enumerate(tgt):

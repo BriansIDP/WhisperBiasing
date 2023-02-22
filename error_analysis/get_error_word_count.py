@@ -17,8 +17,8 @@ with open("word_freq.txt") as fin:
 
 # with open("../data/SLURP/Blist/rarewords_error_oov.txt") as fin:
 # with open("../data/LibriSpeech/Blist/all_rare_words.txt") as fin:
-with open("../data/AMI/Blist/rarewords_f30.txt") as fin:
-# with open("../data/DSTC/Blist/rarewords_error_ontology.txt") as fin:
+with open("../data/AMI/Blist/rarewords_slides_merged.txt") as fin:
+# with open("../data/DSTC/Blist/rarewords_error.txt") as fin:
     rareset = set()
     for line in fin:
         rareset.add(line.strip().upper())

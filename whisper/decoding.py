@@ -108,7 +108,9 @@ class DecodingOptions:
     shallowfusion: bool = False
     GPT2: torch.nn.Module = None
     lm_weight: float = 0
+    ilm_weight: float = 0
     GPT2tokenizer: Tokenizer = None
+    ilme_model: torch.nn.Module = None
 
 
 @dataclass(frozen=True)
@@ -496,6 +498,8 @@ class DecodingTask:
         if self.options.shallowfusion or self.options.useGPT:
             self.GPT2 = self.options.GPT2
             self.GPT2tokenizer = self.options.GPT2tokenizer
+            if self.options.ilm_weight > 0:
+                self.ilme_model = self.options.ilme_model
 
         self.n_group: int = options.beam_size or options.best_of or 1
         self.n_ctx: int = model.dims.n_text_ctx
@@ -511,6 +515,8 @@ class DecodingTask:
 
         # inference: implements the forward pass through the decoder, including kv caching
         self.inference = PyTorchInference(model, len(self.initial_tokens))
+        if self.options.shallowfusion and self.options.ilm_weight > 0:
+            self.inference_ilme = PyTorchInference(self.ilme_model, len(self.initial_tokens))
 
         # sequence ranker: implements how to rank a group of sampled sequences
         self.sequence_ranker = MaximumLikelihoodRanker(options.length_penalty)
@@ -637,6 +643,7 @@ class DecodingTask:
 
         try:
             for i in range(self.sample_len):
+
                 if self.biasing:
                     logits, hidden = self.inference.getstates(tokens, audio_features)
                     if self.useGPT:
@@ -662,16 +669,23 @@ class DecodingTask:
                 else:
                     logits = self.inference.logits(tokens, audio_features)
 
+                if self.options.ilm_weight > 0:
+                    ilm_logits = self.inference_ilme.logits(tokens, audio_features * 0)
+
                 if i == 0 and self.tokenizer.no_speech is not None:  # save no_speech_probs
                     probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
                     no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
 
                 # now we need to consider the logits at the last token only
                 logits = logits[:, -1]
+                if self.options.ilm_weight > 0:
+                    ilm_logits = ilm_logits[:, -1]
 
                 # apply the logit filters, e.g. for suppressing or applying penalty to
                 for logit_filter in self.logit_filters:
                     logit_filter.apply(logits, tokens)
+                    if self.options.ilm_weight > 0:
+                        logit_filter.apply(ilm_logits, tokens)
 
                 # Apply biasing if needed:
                 if self.biasing:
@@ -699,6 +713,10 @@ class DecodingTask:
                         gpt2_logits = F.pad(gpt2_logits, (0, 1607), value=-float('inf'))
                         gpt2_logits = F.log_softmax(gpt2_logits, dim=-1)
 
+                        if self.options.ilm_weight > 0:
+                            ilm_logits = F.log_softmax(ilm_logits, dim=-1)
+                            logits -= self.options.ilm_weight * ilm_logits
+
                         logits += self.options.lm_weight * gpt2_logits
 
                 # expand the tokens tensor with the selected next tokens
@@ -711,6 +729,8 @@ class DecodingTask:
                     break
         finally:
             self.inference.cleanup_caching()
+            if self.options.ilm_weight > 0:
+                self.inference_ilme.cleanup_caching()
 
         return tokens, sum_logprobs, no_speech_probs
 
