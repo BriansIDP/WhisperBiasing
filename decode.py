@@ -109,10 +109,12 @@ for idx, data in enumerate(testloader):
             text_nbest = [text_nbest_i.lower() for text_nbest_i in result[i].text_nbest]
             text_nbest = [re.sub("[^a-zA-Z\' ]+", "", text_nbest_i) for text_nbest_i in text_nbest]
             sum_logprob_nbest = result[i].sum_logprob_nbest
-            text_logprob_nbest = list(zip(text_nbest, sum_logprob_nbest))
-            text_logprob_nbest = sorted(text_logprob_nbest, key=lambda x: x[1], reverse=True)
-            nbest_dict[uttname] = [{"text": t, "whisper_slp": slp} for t, slp in text_logprob_nbest]
-            
+            token_nbest = result[i].token_nbest
+            nbest_dict[uttname] = [
+                {"text": t, "token": token, "whisper_slp": slp}
+                for t, slp, token in zip(text_nbest, sum_logprob_nbest, token_nbest)
+            ]
+
     if idx % 10 == 0 and idx > 0:
         print("{} out of {} finished | time elapsed {}".format(idx, len(testloader), time.time()-start))
         print("WER: {}/{}={}".format(totalwer, totalwords, totalwer/totalwords))
@@ -128,4 +130,4 @@ with open(os.path.join(args.expdir, "ref.wrd.trn"), "w") as fout:
 
 if args.save_nbest:
     with open(os.path.join(args.expdir, "nbest.json"), "w") as fout:
-        json.dump(nbest_dict, fout, indent=4)
+        json.dump(nbest_dict, fout)

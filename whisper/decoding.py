@@ -123,6 +123,7 @@ class DecodingResult:
     compression_ratio: float = np.nan
     text_nbest: List = None
     sum_logprob_nbest: List = None
+    token_nbest: List = None
 
 
 class Inference:
@@ -751,7 +752,7 @@ class DecodingTask:
         sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
         avg_logprobs: List[float] = [lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)]
 
-        fields = (texts, languages, tokens, audio_features, avg_logprobs, no_speech_probs, texts_nbest, sum_logprobs_nbest)
+        fields = (texts, languages, tokens, audio_features, avg_logprobs, no_speech_probs, texts_nbest, sum_logprobs_nbest, tokens_nbest)
         if len(set(map(len, fields))) != 1:
             raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
 
@@ -767,8 +768,9 @@ class DecodingTask:
                 compression_ratio=compression_ratio(text),
                 text_nbest=text_nbest,
                 sum_logprob_nbest=sum_logprob_nbest,
+                token_nbest=token_nbest
             )
-            for text, language, tokens, features, avg_logprob, no_speech_prob, text_nbest, sum_logprob_nbest in zip(*fields)
+            for text, language, tokens, features, avg_logprob, no_speech_prob, text_nbest, sum_logprob_nbest, token_nbest in zip(*fields)
         ]
 
 
