@@ -541,3 +541,12 @@ class EnglishTextNormalizer:
         s = re.sub(r"\s+", " ", s)  # replace any successive whitespace characters with a space
 
         return s
+
+class SimpleEnglishTextNormalizer:
+    def __init__(self):
+        self.standardize_spellings = EnglishSpellingNormalizer()
+
+    def __call__(self, s: str):
+        s = s.lower()
+        s = self.standardize_spellings(s)
+        return s
