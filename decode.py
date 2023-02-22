@@ -2,6 +2,7 @@ import sys, os
 import re
 import time
 import argparse
+import json
 
 import torch
 import whisper
@@ -31,6 +32,7 @@ parser.add_argument('--attndim', type=int, default=256)
 parser.add_argument('--biasinglist', type=str, default="data/LibriSpeech/Blist/rareword_f15.txt")
 parser.add_argument('--maxKBlen', type=int, default=1)
 parser.add_argument('--dropentry', type=float, default=0.0)
+parser.add_argument('--modeltype', type=str, default="base.en")
 args = parser.parse_args()
 
 shallowfusion = args.use_gpt2
@@ -50,7 +52,7 @@ if args.loadfrom != '':
     if useGPT or args.use_gpt2:
         GPTtokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 else:
-    model = whisper.load_model("base.en").eval()
+    model = whisper.load_model(args.modeltype).eval()
     biasing_model = None
     useGPT = False
 
