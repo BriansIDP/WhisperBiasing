@@ -9,6 +9,7 @@ import editdistance
 from dataloader import get_dataloader, BiasingProcessor
 from whisper.model import WhisperBiasing
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
+import json
 
 parser = argparse.ArgumentParser(description = 'Running Whisper experiments')
 
@@ -22,6 +23,7 @@ parser.add_argument('--expdir', type=str, default="exp/origmodel")
 parser.add_argument('--loadfrom', type=str, default="")
 parser.add_argument('--biasing', action="store_true")
 parser.add_argument('--use_gpt2', action="store_true")
+parser.add_argument('--save_nbest', action="store_true")
 parser.add_argument('--lm_weight', type=float, default=0)
 parser.add_argument('--deepbiasing', action="store_true")
 parser.add_argument('--attndim', type=int, default=256)
@@ -65,6 +67,7 @@ totalwords = 0
 totalwer = 0
 total_hyp = []
 total_ref = []
+nbest_dict = {}
 
 print("Start of decoding")
 start = time.time()
@@ -102,6 +105,14 @@ for idx, data in enumerate(testloader):
         fullref = "{} ({})\n".format(utt.lower(), uttname)
         total_hyp.append(fulltext)
         total_ref.append(fullref)
+        if args.save_nbest:
+            text_nbest = [text_nbest_i.lower() for text_nbest_i in result[i].text_nbest]
+            text_nbest = [re.sub("[^a-zA-Z\' ]+", "", text_nbest_i) for text_nbest_i in text_nbest]
+            sum_logprob_nbest = result[i].sum_logprob_nbest
+            text_logprob_nbest = list(zip(text_nbest, sum_logprob_nbest))
+            text_logprob_nbest = sorted(text_logprob_nbest, key=lambda x: x[1], reverse=True)
+            nbest_dict[uttname] = [{"text": t, "whisper_slp": slp} for t, slp in text_logprob_nbest]
+            
     if idx % 10 == 0 and idx > 0:
         print("{} out of {} finished | time elapsed {}".format(idx, len(testloader), time.time()-start))
         print("WER: {}/{}={}".format(totalwer, totalwords, totalwer/totalwords))
@@ -114,3 +125,7 @@ with open(os.path.join(args.expdir, "hyp.wrd.trn"), "w") as fout:
 with open(os.path.join(args.expdir, "ref.wrd.trn"), "w") as fout:
     for line in total_ref:
         fout.write(line + '\n')
+
+if args.save_nbest:
+    with open(os.path.join(args.expdir, "nbest.json"), "w") as fout:
+        json.dump(nbest_dict, fout, indent=4)

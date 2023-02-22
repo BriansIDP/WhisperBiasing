@@ -121,6 +121,8 @@ class DecodingResult:
     no_speech_prob: float = np.nan
     temperature: float = np.nan
     compression_ratio: float = np.nan
+    text_nbest: List = None
+    sum_logprob_nbest: List = None
 
 
 class Inference:
@@ -737,6 +739,10 @@ class DecodingTask:
             [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s] for s in tokens
         ]
 
+        tokens_nbest = [[t.tolist() for t in i] for i in tokens]
+        texts_nbest = [[tokenizer.decode(t).strip() for t in i] for i in tokens_nbest]
+        sum_logprobs_nbest = sum_logprobs
+
         # select the top-ranked sample in each group
         selected = self.sequence_ranker.rank(tokens, sum_logprobs)
         tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
@@ -745,7 +751,7 @@ class DecodingTask:
         sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
         avg_logprobs: List[float] = [lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)]
 
-        fields = (texts, languages, tokens, audio_features, avg_logprobs, no_speech_probs)
+        fields = (texts, languages, tokens, audio_features, avg_logprobs, no_speech_probs, texts_nbest, sum_logprobs_nbest)
         if len(set(map(len, fields))) != 1:
             raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
 
@@ -759,8 +765,10 @@ class DecodingTask:
                 no_speech_prob=no_speech_prob,
                 temperature=self.options.temperature,
                 compression_ratio=compression_ratio(text),
+                text_nbest=text_nbest,
+                sum_logprob_nbest=sum_logprob_nbest,
             )
-            for text, language, tokens, features, avg_logprob, no_speech_prob in zip(*fields)
+            for text, language, tokens, features, avg_logprob, no_speech_prob, text_nbest, sum_logprob_nbest in zip(*fields)
         ]
 
 
