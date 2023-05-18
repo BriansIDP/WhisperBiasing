@@ -15,10 +15,7 @@ with open("word_freq.txt") as fin:
         word, freq = line.split()
         freqlist[word.upper()] = int(freq)
 
-with open("../data/SLURP/Blist/rarewords_error_oov.txt") as fin:
-# with open("../data/LibriSpeech/Blist/all_rare_words.txt") as fin:
-# with open("../data/AMI/Blist/rarewords_slides_merged.txt") as fin:
-# with open("../data/DSTC/Blist/rarewords_error_ontology.txt") as fin:
+with open("../data/LibriSpeech/Blist/all_rare_words.txt") as fin:
     rareset = set()
     for line in fin:
         rareset.add(line.strip().upper())
@@ -52,20 +49,8 @@ for i, line in enumerate(lines):
                     error_words_freqs[word.upper()] = 1
                 elif word == word.lower() and word.upper() not in error_words_freqs:
                     error_words_freqs[word.upper()] = 0
-
-                # if word != word.lower() and word in freqlist and freqlist[word.upper()] >= 3 and freqlist[word.upper()] <= 10:
-                #     if project not in project_set:
-                #         project_set.add(project)    
-                        
 print(len(error_words_freqs.keys()))
 print(insert_rare)
-
-# with open('project_set.txt', 'w') as fout:
-#     for project in project_set:
-#         fout.write('{}\n'.format(project))
-# with open('error_words.txt', 'w') as fout:
-#     for word, error in error_words_freqs.items():
-#         fout.write('{} {}\n'.format(word, error))
 
 commonwords = []
 rarewords = []
@@ -106,11 +91,6 @@ for word, error in error_words_freqs.items():
         common_freq += freqlist_test[word]
         common_error += error
 
-# with open('word_error_list.txt', 'w') as fout:
-#     for word, error in error_words_freqs.items():
-#         if word in freqlist_test:
-#             error_rate = error/freqlist_test[word]
-#             fout.write('{}\t{}\t{}\t{:.2f}\n'.format(word, error, freqlist_test[word], error/freqlist_test[word]))
 total_words = common_freq + rare_freq + oov_freq
 total_errors = common_error+rare_error+oov_error + insert_error
 WER = total_errors / total_words
@@ -124,8 +104,3 @@ print('Insert error: {} / {} = {}'.format(insert_error - insert_rare, total_word
 print('Insertion + OOV error {}'.format((insert_error + oov_error - insert_rare) / total_words))
 # print('Very common words error freq: {} / {} = {}'.format(very_common_error, very_common_words, very_common_error/very_common_words))
 print('='*89)
-
-# with open('freq_error_data.txt', 'w') as fout:
-#     fout.write('frequency error total\n')
-#     for freq in range(3, 101):
-#         fout.write('{} {} {}\n'.format(freq, words_error_freq[freq], words_total_freq[freq]))
