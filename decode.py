@@ -33,11 +33,22 @@ parser.add_argument('--biasinglist', type=str, default="data/LibriSpeech/Blist/r
 parser.add_argument('--maxKBlen', type=int, default=1)
 parser.add_argument('--dropentry', type=float, default=0.0)
 parser.add_argument('--modeltype', type=str, default="base.en")
+parser.add_argument('--normalise', action="store_true")
+parser.add_argument('--logfile', type=str, default="")
 args = parser.parse_args()
+
+
+def logging(s, logfile, logging_=True, log_=True):
+    print(s)
+    if log_:
+        with open(logfile, 'a+') as f_log:
+            f_log.write(s + '\n')
 
 shallowfusion = args.use_gpt2
 useGPT = None
 GPTtokenizer = None
+normaliser = EnglishTextNormalizer()
+logfile = args.logfile if args.logfile != "" else os.path.join(args.expdir, "log.txt")
 if args.use_gpt2:
     GPTmodel = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True).to(args.device)
     GPThiddim = GPTmodel.config.n_embd
@@ -110,14 +121,18 @@ for idx, data in enumerate(testloader):
     result = whisper.decode(model, fbank, options)
     for i, utt in enumerate(tgt):
         uttname = uttnames[i]
-        text = result[i].text.lower()
-        text = re.sub("[^a-zA-Z\' ]+", "", text).split()
-        refwords = utt.lower().split()
+        if args.normalise:
+            text = normaliser(result[i].text).split()
+            refwords = normaliser(utt.lower()).split()
+        else:
+            text = result[i].text.lower()
+            text = re.sub("[^a-zA-Z\' ]+", "", text).split()
+            refwords = utt.lower().split()
         we = editdistance.eval(text, refwords)
         totalwords += len(refwords)
         totalwer += we
         fulltext = "{} ({})\n".format(' '.join(text), uttname)
-        fullref = "{} ({})\n".format(utt.lower(), uttname)
+        fullref = "{} ({})\n".format(normaliser(utt.lower()) if args.normalise else utt.lower(), uttname)
         total_hyp.append(fulltext)
         total_ref.append(fullref)
         if args.save_nbest:
@@ -133,6 +148,8 @@ for idx, data in enumerate(testloader):
     if idx % 10 == 0 and idx > 0:
         print("{} out of {} finished | time elapsed {}".format(idx, len(testloader), time.time()-start))
         print("WER: {}/{}={}".format(totalwer, totalwords, totalwer/totalwords))
+        logging("{} out of {} finished | time elapsed {} | WER: {}".format(
+            idx, len(testloader), time.time()-start, totalwer/totalwords), logfile)
 
 print("WER: {}/{}={}".format(totalwer, totalwords, totalwer/totalwords))
 
