@@ -17,7 +17,7 @@ python train.py \
     --biasinglist data/LibriSpeech/Blist/rareword_f15.txt \
     --dropentry 0.1 \
     --maxKBlen 200 \
-    --useGPT \
+    # --useGPT \
     # --GNNtype gcn2 \
     # --GNNdim 256 \
     # --loadfrom exp/finetune_librispeech_lr0.0005_KB200_drop0.1/model.acc.best \
