@@ -2,7 +2,7 @@
 
 ## Whisper Biasing
 
-[[Paper]]([https://arxiv.org/abs/2212.04356](https://arxiv.org/pdf/2306.01942.pdf))
+[[Paper]](https://arxiv.org/pdf/2306.01942.pdf)
 
 Please refer to the above information for Whisper models and paper.
 
