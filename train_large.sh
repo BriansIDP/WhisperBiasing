@@ -18,4 +18,4 @@ python train.py \
     --biasinglist data/LibriSpeech/Blist/rareword_error.txt \
     --dropentry 0.3 \
     --maxKBlen 100 \
-    --loadfrom exp/${expdir}/model.acc.best \
+    # --loadfrom exp/${expdir}/model.acc.best \
